@@ -120,6 +120,7 @@ private:
 
     void allocateChunks(QTcpSocket* client, const QString& fileId, qint64 size);
     void lookupFile(QTcpSocket* client, const QString& fileId);
+    void reallocateChunk(QTcpSocket* client, const QString& fileId, const QString& chunkId);
     QString getMetadataString(const FileMetadata& metadata);
     // TODO: register chunk replica
     // void registerChunkReplica(const QString& chunkId, const QString& addr, quint16 port);

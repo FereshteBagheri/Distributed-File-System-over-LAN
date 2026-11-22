@@ -4,7 +4,9 @@
 #include <QFile>
 #include <QHostAddress>
 #include <QObject>
+#include <QSet>
 #include <QTcpSocket>
+#include <QTimer>
 #include <QUdpSocket>
 #include <QVector>
 
@@ -43,10 +45,17 @@ private slots:
     void onError(QAbstractSocket::SocketError);
 
     void onUdpReadyRead();
+    void onRetryTimeout();
 
 private:
+    enum class Transfer { None, Upload, Download };
+
     void uploadFileToChunk();
     void downloadFileFromChunk();
+    void retryCurrentChunk(const QString& reason);
+    void requestReallocation();
+    void failTransfer(const QString& reason);
+    void sendDatagram(const QByteArray& datagram, const QHostAddress& ip, quint16 port);
 
     static QString parentDirectory();
     void getChunkInfos(const QString& pkt, QVector<ChunkServerInfo>& infos, int idx, int numChunks);
@@ -70,9 +79,20 @@ private:
     int m_downloadCurrent = 0;
     QVector<ChunkServerInfo> m_downloadChunksInfo;
 
+    Transfer m_transfer = Transfer::None;
+    QTimer m_retryTimer;
+    int m_attempts = 0;
+    int m_reallocations = 0;
+    bool m_waitingForReallocation = false;
+
+    bool m_holePunching = false;
+    QSet<QString> m_punchedServers;
+
     static constexpr int CHUNK_SIZE = 8 * 1024;
     static constexpr int CHUNK_SERVER_BASE_PORT = 5000;
-
+    static constexpr int RETRY_TIMEOUT_MS = 1000;
+    static constexpr int MAX_ATTEMPTS = 5;
+    static constexpr int MAX_REALLOCATIONS = 3;
 };
 
 #endif // CLIENT_H

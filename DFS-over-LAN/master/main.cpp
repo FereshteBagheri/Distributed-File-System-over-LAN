@@ -3,7 +3,7 @@
 #include <QCoreApplication>
 #include <QDebug>
 
-#include "MasterServer.h"
+#include "masterserver.h"
 
 int main(int argc, char* argv[]) {
     QCoreApplication app(argc, argv);

@@ -153,6 +153,9 @@ void MasterServer::handleRequest(QTcpSocket* client, const QByteArray& data) {
         QString fileId = QString::fromUtf8(parts[1]);
         lookupFile(client, fileId);
     }
+    else if (command == "REALLOCATE_CHUNK" && parts.size() >= 3) {
+        reallocateChunk(client, QString::fromUtf8(parts[1]), QString::fromUtf8(parts[2]));
+    }
     // TODO: register chunk replica
     // else if (command == "REGISTER_CHUNK_REPLICA" && parts.size() >= 4) {
     //     QString chunkId = QString::fromUtf8(parts[1]);
@@ -182,7 +185,7 @@ void MasterServer::allocateChunks(QTcpSocket* client, const QString& fileId, qin
 
     for (int i = 0; i < numChunks; ++i) {
         int dfsPos = (startIdx + i) % dfsOrder.size();
-        int chunkServerPort = dfsOrder[dfsPos]; // for fuck sake, i dont understand what the fuck dfs do in this project
+        int chunkServerPort = dfsOrder[dfsPos];
 
         ChunkInfo chunk;
         chunk.chunkId = fileId + "_chunk_" + QString::number(i);
@@ -214,6 +217,31 @@ void MasterServer::lookupFile(QTcpSocket* client, const QString& fileId) {
     response += getMetadataString(metadata);
     response += "\n";
     client->write(response.toUtf8());
+}
+
+void MasterServer::reallocateChunk(QTcpSocket* client, const QString& fileId, const QString& chunkId) {
+    if (!fileMetadata.contains(fileId)) {
+        client->write("ERROR File not found\n");
+        return;
+    }
+
+    for (auto& chunk : fileMetadata[fileId].chunks) {
+        if (chunk.chunkId != chunkId)
+            continue;
+
+        const int currentPort = chunk.locations.isEmpty() ? -1 : chunk.locations.first().port;
+        const int currentPos = dfsOrder.indexOf(currentPort);
+        const int newPort = dfsOrder[(currentPos + 1) % dfsOrder.size()];
+
+        chunk.locations = {ChunkServerInfo{"127.0.0.1", quint16(newPort)}};
+
+        QString response = QString("OK Reallocated %1 %2 %3\n").arg(chunkId, "127.0.0.1").arg(newPort);
+        client->write(response.toUtf8());
+        qDebug() << "Reallocated" << chunkId << "from port" << currentPort << "to port" << newPort;
+        return;
+    }
+
+    client->write("ERROR Chunk not found\n");
 }
 
 QString MasterServer::getMetadataString(const FileMetadata& metadata) {

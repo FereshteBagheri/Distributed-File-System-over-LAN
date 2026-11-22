@@ -12,6 +12,36 @@ The general flow of operations is as follows:
 | ![Architecture 1](pictures/1.png) | ![Architecture 2](pictures/2.png) | ![Architecture 3](pictures/3.png) |
 | :-------------------------------: | :-------------------------------: | :-------------------------------: |
 
+Computer Networks course project (University of Tehran), built by a team of two:
+[Shahriar-0](https://github.com/Shahriar-0) and [Fereshteh Bagheri](https://github.com/FereshteBagheri).
+
+**At a glance**
+
+- One master server (TCP, default port `4000`) keeps the file → chunk metadata and saves it to `master_log.json`, so the metadata survives a restart.
+- 15 chunk servers (UDP ports `5000`–`5014`) run on the local machine and store chunks on disk.
+- A Qt Quick (QML) client splits a file into 8 KB chunks and uploads or downloads them **one chunk at a time**: each chunk is sent after the previous one is acknowledged.
+- **Error correction:** every chunk is sent with Reed–Solomon parity (RS(255,223), via the bundled [schifra](DFS-over-LAN/client-gui/schifra/) library) and a CRC32. The receiver corrects up to 16 corrupted bytes in every 255-byte block and detects chunks it cannot repair.
+- **Simulated noise:** the chunk servers flip random bits in every chunk they receive or send (bit error rate set with `--noise`, default `0.001`), so the error correction is exercised on every transfer.
+- **Retransmission and re-routing:** the client resends a chunk when it arrives corrupted or when no reply comes within 1 second. After 5 failed attempts it asks the master to move the chunk to another chunk server.
+
+## Build and Run
+
+Requires Qt 6 (Core, Network, Quick) and CMake 3.16 or newer.
+
+```bash
+cd DFS-over-LAN
+cmake -B build
+cmake --build build
+./build/master/master -p 4000          # 1. master server
+./build/chunk/chunk_server             # 2. starts all 15 chunk servers
+./build/client-gui/appclient-gui       # 3. client GUI (connects to 127.0.0.1:4000)
+```
+
+Options:
+
+- `chunk_server --noise <rate>` sets the simulated bit error rate. With `0` the channel is clean; up to about `0.002` every chunk is corrected on the first try; at `0.005` roughly two chunks in three need to be sent again; from about `0.008` almost no chunk can be repaired and uploads fail after re-routing.
+- `DFS_HOLE_PUNCH=1 ./build/client-gui/appclient-gui` makes the client send a `PING` to each chunk server before its first real request, to open a path through a NAT (the chunk server answers with `PONG`).
+
 ## Report
 
 ### Client
@@ -42,32 +72,44 @@ The general flow of operations is as follows:
 
 - **uploadFileToChunk()**
 
-  - Seeks to the current chunk’s offset in the local file, reads up to 8 KB, and constructs a packet:
+  - Seeks to the current chunk’s offset in the local file, reads up to 8 KB, encodes it with `encodeChunk()` (Reed–Solomon parity + CRC32; an 8 KB chunk becomes 9,435 bytes) and constructs a packet:
 
         ```txt
-        STORE <chunkId> <dataLength>\n
-        <binary data…>
+        STORE <chunkId> <encodedLength>\n
+        <encoded data…>
         ```
 
-  - Sends it as a UDP datagram to the chunk server’s IP/port (optionally pinging first for NAT hole‑punching).
+  - Sends it as a UDP datagram to the chunk server’s IP/port (with `DFS_HOLE_PUNCH=1`, a `PING` goes first to open the NAT).
+  - Starts a 1-second retry timer.
   - Emits a log signal so a UI can show “Sent chunk123 → 192.0.2.5:5001”.
 
 - **onUdpReadyRead()** (for ACKs)
 
   - Reads incoming UDP datagrams, splits header and payload.
-  - If header starts with `ACK`, reads the next server info (in case chunks hop between servers), notes corruption flag, emits `chunkAckReceived`, updates a progress signal, and recursively uploads the next chunk.
+  - If header starts with `ACK`, checks that it is for the current chunk (late replies to earlier attempts are ignored), reads the chunk server’s address and the corruption flag, and emits `chunkAckReceived`.
+  - If the flag says the chunk arrived corrupted, the chunk server did not store it, so the client sends it again.
+  - Otherwise it records which server holds the chunk, updates the progress signal and uploads the next chunk in the list the master returned.
   - When all chunks are ACKed, emits `uploadFinished`.
+
+- **Retries and re-routing**
+
+  - If no `ACK` arrives within 1 second, or the chunk arrives corrupted, the chunk is sent again, up to 5 attempts.
+  - After 5 failed attempts the client sends `REALLOCATE_CHUNK <fileId> <chunkId>` to the master, which assigns the chunk to the next chunk server in its DFS order and replies `OK Reallocated <chunkId> <ip> <port>`. The client then uploads the chunk there.
+  - A chunk can be re-routed up to 3 times; after that the upload stops with an error.
 
 #### 4. Download Flow (UDP)
 
 - **downloadFileFromChunk()**
 
-  - Sends a simple `RETRIEVE <chunkId>\n` message to the chunk server.
+  - Sends a simple `RETRIEVE <chunkId>\n` message to the chunk server and starts the retry timer.
 
 - **onUdpReadyRead()** (for DATA)
 
-  - For headers beginning with `DATA`, reads the chunk ID, corruption flag, and length, writes the payload to the output file, emits progress and chunk‑data signals, and requests the next chunk until done.
+  - For headers beginning with `DATA`, reads the chunk ID, corruption flag, and length, and decodes the payload with `decodeChunk()`, which corrects transmission errors and checks the CRC32.
+  - If the chunk could not be repaired, or no reply arrives within 1 second, it is requested again (up to 5 attempts; then the download stops with an error).
+  - Otherwise it writes the data to the output file, emits progress and chunk-data signals, and requests the next chunk until done.
   - Closes the file, computes the final size/path, and emits `downloadFinished`.
+  - An `ERROR <chunkId> chunk not found` reply from the chunk server stops the download.
 
 #### 5. Signals & UI Integration
 
@@ -86,10 +128,12 @@ Throughout, the class emits Qt signals such as: (mostly are connected to qml)
 
 The `MasterServer` listens for TCP connections from `Client` instances, keeps track of every file’s chunk layout, and tells clients which chunk servers to contact. It:
 
-1. Builds a binary‑tree view of chunk servers and precomputes a DFS traversal order.
-2. On each new client TCP connection, parses simple text commands (`ALLOCATE_CHUNKS`, `LOOKUP_FILE`, etc.).
+1. Builds a binary-tree view of the 15 chunk servers and precomputes a depth-first (post-order) traversal order.
+2. On each new client TCP connection, parses simple text commands (`ALLOCATE_CHUNKS`, `LOOKUP_FILE`, `REALLOCATE_CHUNK`).
 3. For uploads, allocates chunk IDs and assigns them to chunk servers in a rotating DFS order.
 4. For downloads, looks up stored metadata and returns the same list of `<chunkId> <ip> <port>` back to the client.
+5. When a client cannot store a chunk on its assigned server, moves the chunk to the next server in DFS order (`REALLOCATE_CHUNK`).
+6. Saves the metadata to `master_log.json` on shutdown (`SIGINT`) and loads it again on start.
 
 #### 1. Networking & Signal Handling
 
@@ -112,6 +156,7 @@ The `MasterServer` listens for TCP connections from `Client` instances, keeps tr
   - Splits the incoming line on spaces and dispatches:
     - `ALLOCATE_CHUNKS <fileId> <size>` → `allocateChunks()`.
     - `LOOKUP_FILE <fileId>` → `lookupFile()`.
+    - `REALLOCATE_CHUNK <fileId> <chunkId>` → `reallocateChunk()`.
     - Unknown → `ERROR Unknown command…`.
 
 #### 3. Chunk Allocation & Lookup
@@ -133,6 +178,10 @@ The `MasterServer` listens for TCP connections from `Client` instances, keeps tr
   - Finds the existing `FileMetadata` for `fileId`, and emits `FILE_METADATA <fileId> <chunkId1> <ip1> <port1> …\n`.
   - The client then parses that and starts its UDP download requests.
 
+- **reallocateChunk()**
+
+  - Finds the chunk, picks the server after its current one in `dfsOrder`, updates the metadata and replies `OK Reallocated <chunkId> <ip> <port>\n`.
+
 #### 4. Interaction With the Client
 
 - The client’s `sendCommand("ALLOCATE_CHUNKS", fileId, size)` leads to `MasterServer::allocateChunks()`, which decides where to store each piece.
@@ -145,28 +194,29 @@ The `MasterServer` listens for TCP connections from `Client` instances, keeps tr
 
 ### 1. Role & Startup
 
-Each `ChunkServer` listens on UDP port `5000 + serverId` and keeps its own `./CHUNK-<id>` folder. On `start()`, it binds that port and waits for two simple commands from any client:
+Each `ChunkServer` listens on UDP port `5000 + serverId` and keeps its own `./CHUNK-<id>` folder. On `start()`, it binds that port and waits for commands from any client:
 
 - **STORE `<chunkId>` `<length>\n<data>`**
 - **RETRIEVE `<chunkId>`**
+- **PING** (NAT hole-punching; answered with `PONG <port>`)
 
 ### 2. Storing a Chunk
 
 1. **Receive STORE**: Parses the header, grabs exactly `<length>` bytes of payload.
-2. **Decode (and “noise” if enabled)**: A placeholder `decodeData()` flips bits or checks integrity.
-3. **Write to Disk**: Saves as `CHUNK-<id>/<chunkId>.bin`.
+2. **Noise and decoding**: `addNoise()` flips random bits to simulate the channel (rate set with `--noise`), then `decodeChunk()` corrects the errors with Reed–Solomon and checks the CRC32.
+3. **Write to Disk**: If the chunk was recovered, saves the original data as `CHUNK-<id>/<chunkId>.bin`. If it could not be repaired, nothing is stored.
 4. **Acknowledge**: Sends back
 
     ```txt
     ACK <chunkId> <thisIp> <thisPort> <corruptedFlag>
     ```
 
-    so the client knows it arrived (and where to ask next, if the master chained servers).
+    so the client knows which server holds the chunk and whether it arrived intact (`corruptedFlag = 1` means it was not stored and must be sent again).
 
 ### 3. Retrieving a Chunk
 
 1. **Receive RETRIEVE**: Reads the requested `<chunkId>`.
-2. **Load & Encode**: Reads the `.bin` file, runs `encodeData()` (e.g. add parity or noise).
+2. **Load & Encode**: Reads the `.bin` file, encodes it with `encodeChunk()` and adds simulated noise with `addNoise()`. (If the file does not exist, replies `ERROR <chunkId> chunk not found`.)
 3. **Send DATA**: Replies with
 
     ```txt
@@ -178,7 +228,13 @@ Each `ChunkServer` listens on UDP port `5000 + serverId` and keeps its own `./CH
 - **MasterServer** told the client which chunk servers (ports) to use, based on a DFS‑shuffled list.
 - **Client** reads those replies over TCP, then talks directly UDP to each `ChunkServer`.
 - The simple STORE/ACK loop drives uploads; RETRIEVE/DATA drives downloads.
-- Corruption flags and optional “noise” let us test reliability and re‑routing code in `Client`.
+- Corruption flags and the simulated noise exercise the reliability code in `Client`: retransmission after a corrupted chunk or a timeout, and re-routing to another chunk server through the master.
+
+### Error Correction (`common/rsCodec.cpp`)
+
+- The chunk gets an 8-byte header (data length + CRC32), is split into 223-byte blocks, and every block is encoded as a 255-byte Reed–Solomon code word over GF(2⁸) with 32 parity bytes, using the schifra library. An 8 KB chunk becomes 37 code words (9,435 bytes), which still fits in one UDP datagram.
+- The decoder corrects up to 16 wrong bytes in each code word, wherever they are in it.
+- If a code word has more errors than that, the decoder reports a failure. In the rare case where it "corrects" a code word to the wrong data, the CRC32 no longer matches, so the chunk is still marked as corrupted rather than accepted.
 
 ## Questions
 
@@ -211,21 +267,29 @@ Advantages of Distributed File Systems are:
 
 ### 4. Considering the parameters you have stored for noise and denoising information, on average, what percentage of sent information will be irrecoverable? What percentage of errors are undetectable?
 
-(calculation may vary since the project is still in development)
+The parameters used in the code are a bit error rate of _p_ = 10⁻³ (the default of `--noise`) and an RS(255,223) code: every 8 KB chunk is sent as 37 code words of 255 bytes, and each code word can correct up to 16 wrong bytes.
 
-Given a per‐bit error rate _p_ ≈ 10⁻⁶ and a 8 KB chunk, the expected bit‐flips per chunk is
-
-$$
-E[k] = Np \approx 8.4 × 10^{-3}
-$$
-
-With an RS code adding _m_ parity symbols, able to correct up to 64 bit‐errors, the probability that a chunk has more than 64 errors is
+A byte is wrong if any of its 8 bits is flipped:
 
 $$
-P_{\rm irrecoverable} = \sum_{k=65}^{N} \binom{N}{k} p^k (1-p)^{N-k},
+q = 1 - (1-p)^8 \approx 7.97 × 10^{-3},
 $$
 
-which for these parameters is _extremely_ small, on the order of 10⁻¹² to 10⁻¹⁸, effectively negligible.
+so a code word has on average 255 _q_ ≈ 2 wrong bytes. It cannot be corrected if it has more than 16:
+
+$$
+P_{\rm block} = \sum_{k=17}^{255} \binom{255}{k} q^k (1-q)^{255-k} \approx 4.7 × 10^{-11},
+$$
+
+and a chunk is lost if any of its 37 code words is:
+
+$$
+P_{\rm chunk} = 1 - (1 - P_{\rm block})^{37} \approx 1.7 × 10^{-9}.
+$$
+
+So about 2 in a billion chunks would be irrecoverable on the first try, and even those are not lost: the receiver detects them and the client sends the chunk again. At _p_ = 5 × 10⁻³ the same formulas give _P_<sub>chunk</sub> ≈ 0.61, which matches what we measured (about 65% of chunks need to be sent again).
+
+**Undetectable errors:** a chunk is accepted with wrong data only if the Reed–Solomon decoder "corrects" a code word to the wrong value **and** the CRC32 of the whole chunk still matches. The CRC32 lets such a chunk through with probability about 2⁻³² ≈ 2.3 × 10⁻¹⁰, so the share of undetectable errors is about 10⁻⁹ × 10⁻¹⁰ ≈ 10⁻¹⁹ per chunk, which is negligible.
 
 ### 5. Do distributed file systems prevent all types of data corruption? Explain the use of replicas (Replica) in these systems
 

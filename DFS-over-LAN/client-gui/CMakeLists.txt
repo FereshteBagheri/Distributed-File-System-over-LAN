@@ -8,11 +8,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(Qt6 6.2 COMPONENTS Quick Network REQUIRED)
 
 set(COMMON_SOURCES
-    ../common/EncodingUtils.cpp
+    ../common/encodingUtils.cpp
+    ../common/rsCodec.cpp
 )
 
 set(COMMON_HEADERS
-    ../common/EncodingUtils.h
+    ../common/encodingUtils.h
+    ../common/rsCodec.h
 )
 
 qt_add_executable(appclient-gui
@@ -20,7 +22,9 @@ qt_add_executable(appclient-gui
     ${COMMON_SOURCES}
 )
 
-target_include_directories(appclient-gui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../common)
+target_include_directories(appclient-gui PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../common
+    ${CMAKE_CURRENT_SOURCE_DIR}/schifra)
 
 qt_add_qml_module(appclient-gui
     URI client-gui
