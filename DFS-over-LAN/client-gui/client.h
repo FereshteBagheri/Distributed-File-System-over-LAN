@@ -91,7 +91,8 @@ private:
     static constexpr int CHUNK_SIZE = 8 * 1024;
     static constexpr int CHUNK_SERVER_BASE_PORT = 5000;
     static constexpr int RETRY_TIMEOUT_MS = 1000;
-    static constexpr int MAX_ATTEMPTS = 5;
+    static constexpr int MAX_ATTEMPTS = 5;            // per server, for uploads
+    static constexpr int MAX_DOWNLOAD_ATTEMPTS = 20;  // downloads cannot be re-routed
     static constexpr int MAX_REALLOCATIONS = 3;
 };
 

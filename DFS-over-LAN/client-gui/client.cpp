@@ -220,7 +220,9 @@ void Client::retryCurrentChunk(const QString& reason) {
     }
     else if (m_transfer == Transfer::Download) {
         const QString cid = m_downloadChunksInfo[m_downloadCurrent].chunkId;
-        if (m_attempts < MAX_ATTEMPTS) {
+        // A chunk is stored on one server only, so a download cannot be re-routed;
+        // it gets more attempts instead.
+        if (m_attempts < MAX_DOWNLOAD_ATTEMPTS) {
             emit logReceived(QString("%1: %2, requesting again").arg(cid, reason));
             downloadFileFromChunk();
         } else {

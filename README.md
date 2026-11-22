@@ -22,11 +22,17 @@ Computer Networks course project (University of Tehran), built by a team of two:
 - A Qt Quick (QML) client splits a file into 8 KB chunks and uploads or downloads them **one chunk at a time**: each chunk is sent after the previous one is acknowledged.
 - **Error correction:** every chunk is sent with Reed–Solomon parity (RS(255,223), via the bundled [schifra](DFS-over-LAN/client-gui/schifra/) library) and a CRC32. The receiver corrects up to 16 corrupted bytes in every 255-byte block and detects chunks it cannot repair.
 - **Simulated noise:** the chunk servers flip random bits in every chunk they receive or send (bit error rate set with `--noise`, default `0.001`), so the error correction is exercised on every transfer.
-- **Retransmission and re-routing:** the client resends a chunk when it arrives corrupted or when no reply comes within 1 second. After 5 failed attempts it asks the master to move the chunk to another chunk server.
+- **Retransmission and re-routing:** the client resends a chunk when it arrives corrupted or when no reply comes within 1 second. After 5 failed attempts it asks the master to move the chunk to another chunk server. Downloads cannot be re-routed (each chunk is stored on one server), so they get up to 20 attempts.
 
 ## Build and Run
 
-Requires Qt 6 (Core, Network, Quick) and CMake 3.16 or newer.
+Requires Qt 6.2 or newer (Core, Network, Quick, Quick Controls) and CMake 3.16 or newer. On Ubuntu:
+
+```bash
+sudo apt install qt6-base-dev qt6-declarative-dev libgl1-mesa-dev \
+    qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts \
+    qml6-module-qtquick-window qml6-module-qtquick-templates qml6-module-qtqml-workerscript
+```
 
 ```bash
 cd DFS-over-LAN
@@ -106,7 +112,7 @@ Options:
 - **onUdpReadyRead()** (for DATA)
 
   - For headers beginning with `DATA`, reads the chunk ID, corruption flag, and length, and decodes the payload with `decodeChunk()`, which corrects transmission errors and checks the CRC32.
-  - If the chunk could not be repaired, or no reply arrives within 1 second, it is requested again (up to 5 attempts; then the download stops with an error).
+  - If the chunk could not be repaired, or no reply arrives within 1 second, it is requested again (up to 20 attempts, since a download cannot be re-routed; then the download stops with an error).
   - Otherwise it writes the data to the output file, emits progress and chunk-data signals, and requests the next chunk until done.
   - Closes the file, computes the final size/path, and emits `downloadFinished`.
   - An `ERROR <chunkId> chunk not found` reply from the chunk server stops the download.

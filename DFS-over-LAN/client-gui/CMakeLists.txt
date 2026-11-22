@@ -27,7 +27,7 @@ target_include_directories(appclient-gui PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/schifra)
 
 qt_add_qml_module(appclient-gui
-    URI client-gui
+    URI clientgui
     VERSION 1.0
     QML_FILES main.qml
     SOURCES

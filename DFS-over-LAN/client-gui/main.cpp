@@ -14,7 +14,7 @@ int main(int argc, char* argv[]) {
 
     Client client(QHostAddress("127.0.0.1"), 4000);
     engine.rootContext()->setContextProperty("client", &client);
-    engine.load(QUrl(QStringLiteral("qrc:/client-gui/main.qml")));
+    engine.load(QUrl(QStringLiteral("qrc:/clientgui/main.qml")));
 
     if (engine.rootObjects().isEmpty())
         return -1;
